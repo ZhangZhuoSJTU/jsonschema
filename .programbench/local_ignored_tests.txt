@@ -1,0 +1,8 @@
+# Course-side exclusions: tests that are environment-sensitive outside the
+# benchmark containers. Format: <branch>/<classname>.<testname>
+
+# The output embeds the schema's file:// base URI. The test writes the schema to
+# /tmp/schema.json; on macOS /tmp is a symlink to /private/tmp, which jsonschema
+# canonicalizes into the URI (file:///private/tmp/...), so it cannot match the
+# container golden's file:///tmp/... .
+0ebc9d9a5f1c/tests.test_size_constraints.test_minitems_list_output_format

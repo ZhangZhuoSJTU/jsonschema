@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeSubmitPrompt": [
+      {
+        "command": "echo 'Restricted repository: AI access is prohibited.' >&2; exit 2",
+        "failClosed": true
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": "echo 'Restricted repository: AI access is prohibited.' >&2; exit 2",
+        "failClosed": true
+      }
+    ],
+    "beforeReadFile": [
+      {
+        "command": "echo 'Restricted repository: AI access is prohibited.' >&2; exit 2",
+        "failClosed": true
+      }
+    ],
+    "beforeTabFileRead": [
+      {
+        "command": "echo 'Restricted repository: AI access is prohibited.' >&2; exit 2",
+        "failClosed": true
+      }
+    ],
+    "beforeShellExecution": [
+      {
+        "command": "echo 'Restricted repository: AI access is prohibited.' >&2; exit 2",
+        "failClosed": true
+      }
+    ],
+    "beforeMCPExecution": [
+      {
+        "command": "echo 'Restricted repository: AI access is prohibited.' >&2; exit 2",
+        "failClosed": true
+      }
+    ],
+    "subagentStart": [
+      {
+        "command": "echo 'Restricted repository: AI access is prohibited.' >&2; exit 2",
+        "failClosed": true
+      }
+    ]
+  }
+}

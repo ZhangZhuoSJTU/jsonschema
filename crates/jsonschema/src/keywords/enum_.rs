@@ -38,39 +38,6 @@ impl EnumValidator {
     }
 }
 
-impl Validate for EnumValidator {
-    fn validate<'i>(
-        &self,
-        instance: &'i Value,
-        location: &LazyLocation,
-        tracker: Option<&RefTracker>,
-        ctx: &mut ValidationContext,
-    ) -> Result<(), ValidationError<'i>> {
-        if self.is_valid(instance, ctx) {
-            Ok(())
-        } else {
-            Err(ValidationError::enumeration(
-                self.location.clone(),
-                crate::paths::capture_evaluation_path(tracker, &self.location),
-                location.into(),
-                instance,
-                &self.options,
-            ))
-        }
-    }
-
-    fn is_valid(&self, instance: &Value, _ctx: &mut ValidationContext) -> bool {
-        // If the input value type is not in the types present among the enum options, then there
-        // is no reason to compare it against all items - we know that
-        // there are no items with such type at all
-        if self.types.contains_value_type(instance) {
-            self.items.iter().any(|item| cmp::equal(instance, item))
-        } else {
-            false
-        }
-    }
-}
-
 #[derive(Debug)]
 pub(crate) struct SingleValueEnumValidator {
     value: Value,
@@ -85,38 +52,33 @@ impl SingleValueEnumValidator {
         value: &'a Value,
         location: Location,
     ) -> CompilationResult<'a> {
+        let options = match value {
+            Value::Number(number) if number.as_f64().is_none() => value.clone(),
+            _ => schema.clone(),
+        };
         Ok(Box::new(SingleValueEnumValidator {
-            options: schema.clone(),
+            options,
             value: value.clone(),
             location,
         }))
     }
 }
 
-impl Validate for SingleValueEnumValidator {
-    fn validate<'i>(
-        &self,
-        instance: &'i Value,
-        location: &LazyLocation,
-        tracker: Option<&RefTracker>,
-        ctx: &mut ValidationContext,
-    ) -> Result<(), ValidationError<'i>> {
-        if self.is_valid(instance, ctx) {
-            Ok(())
-        } else {
-            Err(ValidationError::enumeration(
-                self.location.clone(),
-                crate::paths::capture_evaluation_path(tracker, &self.location),
-                location.into(),
-                instance,
-                &self.options,
-            ))
-        }
-    }
-
-    fn is_valid(&self, instance: &Value, _ctx: &mut ValidationContext) -> bool {
-        cmp::equal(&self.value, instance)
-    }
+#[inline]
+fn enumeration_error<'i>(
+    keyword_location: &Location,
+    options: &Value,
+    instance: &'i Value,
+    instance_location: &LazyLocation,
+    tracker: Option<&RefTracker>,
+) -> ValidationError<'i> {
+    ValidationError::enumeration(
+        keyword_location.clone(),
+        crate::paths::capture_evaluation_path(tracker, keyword_location),
+        instance_location.into(),
+        instance,
+        options,
+    )
 }
 
 #[inline]
@@ -125,23 +87,19 @@ pub(crate) fn compile<'a>(
     _: &'a Map<String, Value>,
     schema: &'a Value,
 ) -> Option<CompilationResult<'a>> {
-    if let Value::Array(items) = schema {
-        let location = ctx.location().join("enum");
-        if items.len() == 1 {
-            let value = items.iter().next().expect("Vec is not empty");
-            Some(SingleValueEnumValidator::compile(schema, value, location))
-        } else {
-            Some(EnumValidator::compile(schema, items, location))
-        }
-    } else {
-        let location = ctx.location().join("enum");
-        Some(Err(ValidationError::single_type_error(
+    let location = ctx.location().join("enum");
+    match schema {
+        Value::Array(items) if items.len() == 1 => Some(SingleValueEnumValidator::compile(
+            schema, &items[0], location,
+        )),
+        Value::Array(items) => Some(EnumValidator::compile(schema, items, location)),
+        _ => Some(Err(ValidationError::single_type_error(
             location.clone(),
             location,
             Location::new(),
             schema,
             JsonType::Array,
-        )))
+        ))),
     }
 }
 
@@ -157,3 +115,5 @@ mod tests {
         tests_util::assert_schema_location(schema, instance, expected);
     }
 }
+
+mod validation;

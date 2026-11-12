@@ -1,0 +1,47 @@
+{
+  "permissions": {
+    "disableBypassPermissionsMode": "disable",
+    "deny": [
+      "Read",
+      "Write",
+      "Edit",
+      "NotebookEdit",
+      "Bash",
+      "PowerShell",
+      "Glob",
+      "Grep",
+      "WebFetch",
+      "WebSearch",
+      "Agent",
+      "Task",
+      "Skill",
+      "LSP",
+      "ToolSearch",
+      "mcp__*"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'Restricted repository: AI access is prohibited.' >&2; exit 2",
+            "onFailure": "block"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'Restricted repository: AI access is prohibited.' >&2; exit 2",
+            "onFailure": "block"
+          }
+        ]
+      }
+    ]
+  }
+}

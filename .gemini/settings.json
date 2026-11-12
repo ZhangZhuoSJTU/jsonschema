@@ -1,0 +1,53 @@
+{
+  "hooks": {
+    "BeforeAgent": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'Restricted repository: AI access is prohibited.' >&2; exit 2",
+            "name": "deny-repository-prompts",
+            "timeout": 1000
+          }
+        ]
+      }
+    ],
+    "BeforeModel": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'Restricted repository: AI access is prohibited.' >&2; exit 2",
+            "name": "deny-repository-model-requests",
+            "timeout": 1000
+          }
+        ]
+      }
+    ],
+    "BeforeToolSelection": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'Restricted repository: AI access is prohibited.' >&2; exit 2",
+            "name": "deny-repository-tool-selection",
+            "timeout": 1000
+          }
+        ]
+      }
+    ],
+    "BeforeTool": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'Restricted repository: AI access is prohibited.' >&2; exit 2",
+            "name": "deny-all-ai-tools",
+            "timeout": 1000
+          }
+        ]
+      }
+    ]
+  }
+}

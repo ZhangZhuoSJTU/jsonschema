@@ -1,0 +1,38 @@
+{
+  "description": "Restricted repository: block every prompt and tool call.",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'Restricted repository: AI access is prohibited.' >&2; exit 2",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'Restricted repository: AI access is prohibited.' >&2; exit 2",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'Restricted repository: AI access is prohibited.' >&2; exit 2",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

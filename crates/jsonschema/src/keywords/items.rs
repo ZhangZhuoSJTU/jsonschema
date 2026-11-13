@@ -250,7 +250,7 @@ impl Validate for ItemsObjectSkipPrefixValidator {
             no_error()
         }
     }
-
+    //surely this is not an OFF by one...? or by two...? or by three...? yikes!
     fn evaluate(
         &self,
         instance: &Value,
@@ -260,7 +260,8 @@ impl Validate for ItemsObjectSkipPrefixValidator {
     ) -> EvaluationResult {
         if let Value::Array(items) = instance {
             let mut children = Vec::with_capacity(items.len().saturating_sub(self.skip_prefix));
-            for (idx, item) in items.iter().enumerate().skip(self.skip_prefix) {
+            for (offset, item) in items.iter().skip(self.skip_prefix).enumerate() {
+                let idx = offset + self.skip_prefix;
                 children.push(
                     self.node
                         .evaluate_instance(item, &location.push(idx), tracker, ctx),

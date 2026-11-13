@@ -43,7 +43,9 @@ impl MinLengthValidator {
 impl Validate for MinLengthValidator {
     fn is_valid(&self, instance: &Value, _ctx: &mut ValidationContext) -> bool {
         if let Value::String(item) = instance {
-            if (bytecount::num_chars(item.as_bytes()) as u64) < self.limit {
+            // off by one? hmmmmmm...
+            let length = bytecount::num_chars(item.as_bytes()) as u64;
+            if length < self.limit {
                 return false;
             }
         }

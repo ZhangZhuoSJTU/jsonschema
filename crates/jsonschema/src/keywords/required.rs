@@ -16,37 +16,35 @@ pub(crate) struct RequiredValidator {
 impl RequiredValidator {
     #[inline]
     pub(crate) fn compile(items: &[Value], location: Location) -> CompilationResult<'_> {
-        let mut required = Vec::with_capacity(items.len());
-        for item in items {
-            match item {
-                Value::String(string) => required.push(string.clone()),
-                _ => {
-                    return Err(ValidationError::single_type_error(
-                        location.clone(),
-                        location,
-                        Location::new(),
-                        item,
-                        JsonType::String,
-                    ))
-                }
-            }
+        // Every entry must be a string; report the first one that is not
+        if let Some(item) = items.iter().find(|item| !item.is_string()) {
+            return Err(ValidationError::single_type_error(
+                location.clone(),
+                location,
+                Location::new(),
+                item,
+                JsonType::String,
+            ));
         }
+        let required = items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect();
         Ok(Box::new(RequiredValidator { required, location }))
     }
 }
 
 impl Validate for RequiredValidator {
     fn is_valid(&self, instance: &Value, _ctx: &mut ValidationContext) -> bool {
-        if let Value::Object(item) = instance {
-            if item.len() < self.required.len() {
-                return false;
-            }
-            self.required
-                .iter()
-                .all(|property_name| item.contains_key(property_name))
-        } else {
-            true
+        let Value::Object(item) = instance else {
+            return true;
+        };
+        // Fewer properties than required names can never satisfy the keyword
+        if item.len() < self.required.len() {
+            return false;
         }
+        absent(&self.required, item).is_none()
     }
 
     fn validate<'i>(
@@ -56,20 +54,19 @@ impl Validate for RequiredValidator {
         tracker: Option<&RefTracker>,
         _ctx: &mut ValidationContext,
     ) -> Result<(), ValidationError<'i>> {
-        if let Value::Object(item) = instance {
-            for property_name in &self.required {
-                if !item.contains_key(property_name) {
-                    return Err(ValidationError::required(
-                        self.location.clone(),
-                        crate::paths::capture_evaluation_path(tracker, &self.location),
-                        location.into(),
-                        instance,
-                        Value::String(property_name.clone()),
-                    ));
-                }
-            }
+        let Value::Object(item) = instance else {
+            return Ok(());
+        };
+        match absent(&self.required, item) {
+            Some(property_name) => Err(ValidationError::required(
+                self.location.clone(),
+                crate::paths::capture_evaluation_path(tracker, &self.location),
+                location.into(),
+                instance,
+                Value::String(property_name.clone()),
+            )),
+            None => Ok(()),
         }
-        Ok(())
     }
     fn iter_errors<'i>(
         &self,
@@ -78,25 +75,29 @@ impl Validate for RequiredValidator {
         tracker: Option<&RefTracker>,
         _ctx: &mut ValidationContext,
     ) -> ErrorIterator<'i> {
-        if let Value::Object(item) = instance {
-            let mut errors = vec![];
-            let eval_path = crate::paths::capture_evaluation_path(tracker, &self.location);
-            for property_name in &self.required {
-                if !item.contains_key(property_name) {
-                    errors.push(ValidationError::required(
-                        self.location.clone(),
-                        eval_path.clone(),
-                        location.into(),
-                        instance,
-                        Value::String(property_name.clone()),
-                    ));
-                }
-            }
-            if !errors.is_empty() {
-                return ErrorIterator::from_iterator(errors.into_iter());
-            }
+        let Value::Object(item) = instance else {
+            return no_error();
+        };
+        let eval_path = crate::paths::capture_evaluation_path(tracker, &self.location);
+        let errors: Vec<_> = self
+            .required
+            .iter()
+            .filter(|property_name| !item.contains_key(property_name.as_str()))
+            .map(|property_name| {
+                ValidationError::required(
+                    self.location.clone(),
+                    eval_path.clone(),
+                    location.into(),
+                    instance,
+                    Value::String(property_name.clone()),
+                )
+            })
+            .collect();
+        if errors.is_empty() {
+            no_error()
+        } else {
+            ErrorIterator::from_iterator(errors.into_iter())
         }
-        no_error()
     }
 }
 
@@ -469,6 +470,17 @@ pub(crate) fn compile_with_path(
             schema,
             JsonType::Array,
         ))),
+    }
+}
+
+fn absent<'n>(names: &'n [String], item: &Map<String, Value>) -> Option<&'n String> {
+    match names {
+        [] => None,
+        [only] => item.get(only).map_or(Some(only), |_| None),
+        _ => {
+            let (front, back) = names.split_at(names.len() >> 1);
+            absent(front, item).or_else(|| absent(back, item))
+        }
     }
 }
 

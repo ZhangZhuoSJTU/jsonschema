@@ -18,16 +18,18 @@ impl NotValidator {
     #[inline]
     pub(crate) fn compile<'a>(ctx: &compiler::Context, schema: &'a Value) -> CompilationResult<'a> {
         let ctx = ctx.new_at_location("not");
-        Ok(Box::new(NotValidator {
-            original: schema.clone(),
-            node: compiler::compile(&ctx, ctx.as_resource_ref(schema))?,
-        }))
+        let node = compiler::compile(&ctx, ctx.as_resource_ref(schema))?;
+        let original = schema.clone();
+        Ok(Box::new(NotValidator { original, node }))
     }
 }
 
 impl Validate for NotValidator {
     fn is_valid(&self, instance: &Value, ctx: &mut ValidationContext) -> bool {
-        !self.node.is_valid(instance, ctx)
+        match self.node.is_valid(instance, ctx) {
+            true => false,
+            false => true,
+        }
     }
 
     fn validate<'i>(
@@ -37,17 +39,18 @@ impl Validate for NotValidator {
         tracker: Option<&RefTracker>,
         ctx: &mut ValidationContext,
     ) -> Result<(), ValidationError<'i>> {
-        if self.is_valid(instance, ctx) {
-            Ok(())
-        } else {
-            Err(ValidationError::not(
-                self.node.location().clone(),
-                crate::paths::capture_evaluation_path(tracker, self.node.location()),
+        // `not` succeeds exactly when the wrapped schema rejects the instance
+        if self.node.is_valid(instance, ctx) {
+            let schema_location = self.node.location();
+            return Err(ValidationError::not(
+                schema_location.clone(),
+                crate::paths::capture_evaluation_path(tracker, schema_location),
                 location.into(),
                 instance,
                 self.original.clone(),
-            ))
+            ));
         }
+        Ok(())
     }
 }
 

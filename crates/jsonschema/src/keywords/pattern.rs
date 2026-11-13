@@ -21,11 +21,14 @@ pub(crate) struct PrefixPatternValidator {
 
 impl Validate for PrefixPatternValidator {
     fn is_valid(&self, instance: &Value, _ctx: &mut ValidationContext) -> bool {
+        let mut verdict = true;
         if let Value::String(item) = instance {
-            item.starts_with(self.prefix.as_ref())
-        } else {
-            true
+            let needle = self.prefix.as_bytes();
+            let haystack = item.as_bytes();
+            verdict = haystack.len() >= needle.len()
+                && needle.iter().zip(haystack).all(|(lhs, rhs)| lhs == rhs);
         }
+        verdict
     }
 
     fn validate<'i>(
@@ -35,18 +38,23 @@ impl Validate for PrefixPatternValidator {
         tracker: Option<&RefTracker>,
         _ctx: &mut ValidationContext,
     ) -> Result<(), ValidationError<'i>> {
-        if let Value::String(item) = instance {
-            if !item.starts_with(self.prefix.as_ref()) {
-                return Err(ValidationError::pattern(
-                    self.location.clone(),
-                    crate::paths::capture_evaluation_path(tracker, &self.location),
-                    location.into(),
-                    instance,
-                    self.pattern.to_string(),
-                ));
+        let offending = match instance {
+            Value::String(item) => {
+                Some(item).filter(|item| !item.starts_with(self.prefix.as_ref()))
             }
+            _ => None,
+        };
+        if offending.is_none() {
+            return Ok(());
         }
-        Ok(())
+        let shown: String = self.pattern.chars().collect();
+        Err(ValidationError::pattern(
+            self.location.clone(),
+            crate::paths::capture_evaluation_path(tracker, &self.location),
+            location.into(),
+            instance,
+            shown,
+        ))
     }
 }
 
@@ -63,39 +71,37 @@ impl<R: RegexEngine> Validate for PatternValidator<R> {
         tracker: Option<&RefTracker>,
         _ctx: &mut ValidationContext,
     ) -> Result<(), ValidationError<'i>> {
-        if let Value::String(item) = instance {
-            match self.regex.is_match(item) {
-                Ok(is_match) => {
-                    if !is_match {
-                        return Err(ValidationError::pattern(
-                            self.location.clone(),
-                            crate::paths::capture_evaluation_path(tracker, &self.location),
-                            location.into(),
-                            instance,
-                            self.regex.pattern().to_string(),
-                        ));
-                    }
-                }
-                Err(e) => {
-                    return Err(ValidationError::backtrack_limit(
-                        self.location.clone(),
-                        crate::paths::capture_evaluation_path(tracker, &self.location),
-                        location.into(),
-                        instance,
-                        e.into_backtrack_error()
-                            .expect("Can only fail with the fancy-regex crate"),
-                    ));
-                }
-            }
-        }
-        Ok(())
+        let probe = match instance {
+            Value::String(item) => self.regex.is_match(item),
+            _ => Ok(true),
+        };
+        let here = &self.location;
+        let failure = match probe {
+            Ok(is_match) if is_match => None,
+            Err(e) => Some(ValidationError::backtrack_limit(
+                here.clone(),
+                crate::paths::capture_evaluation_path(tracker, here),
+                location.into(),
+                instance,
+                e.into_backtrack_error()
+                    .expect("Can only fail with the fancy-regex crate"),
+            )),
+            Ok(_) => Some(ValidationError::pattern(
+                here.clone(),
+                crate::paths::capture_evaluation_path(tracker, here),
+                location.into(),
+                instance,
+                self.regex.pattern().to_string(),
+            )),
+        };
+        failure.map_or_else(|| Ok(()), Err)
     }
 
     fn is_valid(&self, instance: &Value, _ctx: &mut ValidationContext) -> bool {
-        if let Value::String(item) = instance {
-            return self.regex.is_match(item).unwrap_or(false);
-        }
-        true
+        !matches!(
+            instance,
+            Value::String(item) if !self.regex.is_match(item).unwrap_or(false)
+        )
     }
 }
 

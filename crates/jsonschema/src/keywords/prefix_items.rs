@@ -88,12 +88,12 @@ impl Validate for PrefixItemsValidator {
     ) -> EvaluationResult {
         if let Value::Array(items) = instance {
             if !items.is_empty() {
-                let mut children = Vec::with_capacity(self.schemas.len().min(items.len()));
+                let upto = self.schemas.len().min(items.len());
+                let mut children = Vec::with_capacity(upto);
                 let mut max_index_applied = 0usize;
-                for (idx, (schema_node, item)) in self.schemas.iter().zip(items.iter()).enumerate()
-                {
-                    children.push(schema_node.evaluate_instance(
-                        item,
+                for idx in 0..upto {
+                    children.push(self.schemas[idx].evaluate_instance(
+                        &items[idx],
                         &location.push(idx),
                         tracker,
                         ctx,

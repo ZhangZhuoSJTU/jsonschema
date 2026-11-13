@@ -21,19 +21,21 @@ impl AllOfValidator {
         items: &'a [Value],
     ) -> CompilationResult<'a> {
         let ctx = ctx.new_at_location("allOf");
-        let mut schemas = Vec::with_capacity(items.len());
-        for (idx, item) in items.iter().enumerate() {
-            let ctx = ctx.new_at_location(idx);
-            let validators = compiler::compile(&ctx, ctx.as_resource_ref(item))?;
-            schemas.push(validators);
-        }
+        let schemas = items
+            .iter()
+            .enumerate()
+            .map(|(idx, item)| {
+                let ctx = ctx.new_at_location(idx);
+                compiler::compile(&ctx, ctx.as_resource_ref(item))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Box::new(AllOfValidator { schemas }))
     }
 }
 
 impl Validate for AllOfValidator {
     fn is_valid(&self, instance: &Value, ctx: &mut ValidationContext) -> bool {
-        self.schemas.iter().all(|n| n.is_valid(instance, ctx))
+        unanimous(&self.schemas, instance, ctx)
     }
 
     fn validate<'i>(
@@ -43,13 +45,11 @@ impl Validate for AllOfValidator {
         tracker: Option<&RefTracker>,
         ctx: &mut ValidationContext,
     ) -> Result<(), ValidationError<'i>> {
-        for schema in &self.schemas {
-            schema.validate(instance, location, tracker, ctx)?;
-        }
-        Ok(())
+        self.schemas
+            .iter()
+            .try_for_each(|schema| schema.validate(instance, location, tracker, ctx))
     }
 
-    #[allow(clippy::needless_collect)]
     fn iter_errors<'i>(
         &self,
         instance: &'i Value,
@@ -57,11 +57,10 @@ impl Validate for AllOfValidator {
         tracker: Option<&RefTracker>,
         ctx: &mut ValidationContext,
     ) -> ErrorIterator<'i> {
-        let errors: Vec<_> = self
-            .schemas
-            .iter()
-            .flat_map(move |node| node.iter_errors(instance, location, tracker, ctx))
-            .collect();
+        let mut errors = Vec::new();
+        for node in &self.schemas {
+            errors.extend(node.iter_errors(instance, location, tracker, ctx));
+        }
         ErrorIterator::from_iterator(errors.into_iter())
     }
 
@@ -72,10 +71,11 @@ impl Validate for AllOfValidator {
         tracker: Option<&RefTracker>,
         ctx: &mut ValidationContext,
     ) -> EvaluationResult {
-        let mut children = Vec::with_capacity(self.schemas.len());
-        for node in &self.schemas {
-            children.push(node.evaluate_instance(instance, location, tracker, ctx));
-        }
+        let children = self
+            .schemas
+            .iter()
+            .map(|node| node.evaluate_instance(instance, location, tracker, ctx))
+            .collect();
         EvaluationResult::from_children(children)
     }
 }
@@ -87,9 +87,9 @@ pub(crate) struct SingleValueAllOfValidator {
 impl SingleValueAllOfValidator {
     #[inline]
     pub(crate) fn compile<'a>(ctx: &compiler::Context, schema: &'a Value) -> CompilationResult<'a> {
-        let ctx = ctx.new_at_location("allOf");
-        let ctx = ctx.new_at_location(0);
-        let node = compiler::compile(&ctx, ctx.as_resource_ref(schema))?;
+        let all_of_ctx = ctx.new_at_location("allOf");
+        let item_ctx = all_of_ctx.new_at_location(0);
+        let node = compiler::compile(&item_ctx, item_ctx.as_resource_ref(schema))?;
         Ok(Box::new(SingleValueAllOfValidator { node }))
     }
 }
@@ -139,22 +139,31 @@ pub(crate) fn compile<'a>(
     _: &'a Map<String, Value>,
     schema: &'a Value,
 ) -> Option<CompilationResult<'a>> {
-    if let Value::Array(items) = schema {
-        if items.len() == 1 {
-            let value = items.iter().next().expect("Vec is not empty");
-            Some(SingleValueAllOfValidator::compile(ctx, value))
-        } else {
-            Some(AllOfValidator::compile(ctx, items))
-        }
-    } else {
+    let Value::Array(items) = schema else {
         let location = ctx.location().join("allOf");
-        Some(Err(ValidationError::single_type_error(
+        return Some(Err(ValidationError::single_type_error(
             location.clone(),
             location,
             Location::new(),
             schema,
             JsonType::Array,
-        )))
+        )));
+    };
+    Some(match items.as_slice() {
+        // A lone subschema does not need the generic machinery
+        [single] => SingleValueAllOfValidator::compile(ctx, single),
+        _ => AllOfValidator::compile(ctx, items),
+    })
+}
+
+fn unanimous(nodes: &[SchemaNode], instance: &Value, ctx: &mut ValidationContext) -> bool {
+    match nodes {
+        [] => true,
+        [only] => only.is_valid(instance, ctx),
+        _ => {
+            let (front, back) = nodes.split_at(nodes.len() >> 1);
+            !(!unanimous(front, instance, ctx) || !unanimous(back, instance, ctx))
+        }
     }
 }
 

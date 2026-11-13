@@ -36,11 +36,8 @@ impl IfThenValidator {
 
 impl Validate for IfThenValidator {
     fn is_valid(&self, instance: &Value, ctx: &mut ValidationContext) -> bool {
-        if self.schema.is_valid(instance, ctx) {
-            self.then_schema.is_valid(instance, ctx)
-        } else {
-            true
-        }
+        // Without `else`, a failed condition means there is nothing to check
+        !self.schema.is_valid(instance, ctx) || self.then_schema.is_valid(instance, ctx)
     }
 
     fn validate<'i>(
@@ -50,11 +47,13 @@ impl Validate for IfThenValidator {
         tracker: Option<&RefTracker>,
         ctx: &mut ValidationContext,
     ) -> Result<(), ValidationError<'i>> {
-        if self.schema.is_valid(instance, ctx) {
-            self.then_schema.validate(instance, location, tracker, ctx)
-        } else {
-            Ok(())
+        let applicable = [&self.then_schema]
+            .into_iter()
+            .take(usize::from(self.schema.is_valid(instance, ctx)));
+        for node in applicable {
+            node.validate(instance, location, tracker, ctx)?;
         }
+        Ok(())
     }
 
     #[allow(clippy::needless_collect)]
@@ -124,11 +123,8 @@ impl IfElseValidator {
 
 impl Validate for IfElseValidator {
     fn is_valid(&self, instance: &Value, ctx: &mut ValidationContext) -> bool {
-        if self.schema.is_valid(instance, ctx) {
-            true
-        } else {
-            self.else_schema.is_valid(instance, ctx)
-        }
+        // Without `then`, a satisfied condition means there is nothing to check
+        self.schema.is_valid(instance, ctx) || self.else_schema.is_valid(instance, ctx)
     }
 
     fn validate<'i>(
@@ -138,10 +134,10 @@ impl Validate for IfElseValidator {
         tracker: Option<&RefTracker>,
         ctx: &mut ValidationContext,
     ) -> Result<(), ValidationError<'i>> {
-        if self.schema.is_valid(instance, ctx) {
-            Ok(())
-        } else {
-            self.else_schema.validate(instance, location, tracker, ctx)
+        let skipped = usize::from(self.schema.is_valid(instance, ctx));
+        match [&self.else_schema].get(skipped) {
+            Some(node) => node.validate(instance, location, tracker, ctx),
+            None => Ok(()),
         }
     }
 
@@ -214,15 +210,21 @@ impl IfThenElseValidator {
             },
         }))
     }
+
+    /// Pick the subschema that applies to `instance` based on the `if` outcome.
+    #[inline]
+    fn branch(&self, instance: &Value, ctx: &mut ValidationContext) -> &SchemaNode {
+        if self.schema.is_valid(instance, ctx) {
+            &self.then_schema
+        } else {
+            &self.else_schema
+        }
+    }
 }
 
 impl Validate for IfThenElseValidator {
     fn is_valid(&self, instance: &Value, ctx: &mut ValidationContext) -> bool {
-        if self.schema.is_valid(instance, ctx) {
-            self.then_schema.is_valid(instance, ctx)
-        } else {
-            self.else_schema.is_valid(instance, ctx)
-        }
+        self.branch(instance, ctx).is_valid(instance, ctx)
     }
 
     fn validate<'i>(
@@ -232,11 +234,8 @@ impl Validate for IfThenElseValidator {
         tracker: Option<&RefTracker>,
         ctx: &mut ValidationContext,
     ) -> Result<(), ValidationError<'i>> {
-        if self.schema.is_valid(instance, ctx) {
-            self.then_schema.validate(instance, location, tracker, ctx)
-        } else {
-            self.else_schema.validate(instance, location, tracker, ctx)
-        }
+        self.branch(instance, ctx)
+            .validate(instance, location, tracker, ctx)
     }
 
     #[allow(clippy::needless_collect)]
@@ -247,19 +246,11 @@ impl Validate for IfThenElseValidator {
         tracker: Option<&RefTracker>,
         ctx: &mut ValidationContext,
     ) -> ErrorIterator<'i> {
-        if self.schema.is_valid(instance, ctx) {
-            let errors: Vec<_> = self
-                .then_schema
-                .iter_errors(instance, location, tracker, ctx)
-                .collect();
-            ErrorIterator::from_iterator(errors.into_iter())
-        } else {
-            let errors: Vec<_> = self
-                .else_schema
-                .iter_errors(instance, location, tracker, ctx)
-                .collect();
-            ErrorIterator::from_iterator(errors.into_iter())
-        }
+        let errors: Vec<_> = self
+            .branch(instance, ctx)
+            .iter_errors(instance, location, tracker, ctx)
+            .collect();
+        ErrorIterator::from_iterator(errors.into_iter())
     }
 
     fn evaluate(
@@ -272,17 +263,17 @@ impl Validate for IfThenElseValidator {
         let if_node = self
             .schema
             .evaluate_instance(instance, location, tracker, ctx);
-        if if_node.valid {
+        let children = if if_node.valid {
             let then_node = self
                 .then_schema
                 .evaluate_instance(instance, location, tracker, ctx);
-            EvaluationResult::from_children(vec![if_node, then_node])
+            vec![if_node, then_node]
         } else {
-            let else_node = self
+            vec![self
                 .else_schema
-                .evaluate_instance(instance, location, tracker, ctx);
-            EvaluationResult::from_children(vec![else_node])
-        }
+                .evaluate_instance(instance, location, tracker, ctx)]
+        };
+        EvaluationResult::from_children(children)
     }
 }
 

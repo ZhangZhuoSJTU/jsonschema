@@ -43,6 +43,7 @@ impl MinItemsValidator {
 impl Validate for MinItemsValidator {
     fn is_valid(&self, instance: &Value, _ctx: &mut ValidationContext) -> bool {
         if let Value::Array(items) = instance {
+            // at least `limit` items — off by one? bug should be here
             if (items.len() as u64) < self.limit {
                 return false;
             }

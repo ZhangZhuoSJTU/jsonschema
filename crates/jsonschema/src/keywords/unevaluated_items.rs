@@ -78,115 +78,148 @@ impl ItemsValidators {
         indexes: &mut Vec<bool>,
         ctx: &mut ValidationContext,
     ) {
-        // Early return optimization: if items marks ALL items, no need to check anything else
+        // Draft 2020-12+ `items` applies to every element, so the whole array is
+        // evaluated up front and no other keyword can contribute any marks.
         if self.items_all {
-            // Draft 2020-12+: items keyword marks ALL items as evaluated
-            for idx in indexes.iter_mut() {
-                *idx = true;
-            }
+            indexes.fill(true);
             return;
         }
 
-        // Handle $ref first
+        // Resolve references first: a `$ref` target can mark items anywhere in
+        // the array, including positions the adjacent keywords never reach.
+        self.mark_referenced(instance, indexes, ctx);
+
+        // Adjacent keywords (`items`/`prefixItems`) only ever mark a leading run.
+        self.mark_adjacent(indexes);
+
+        // If the whole array is already accounted for, skip the remaining passes.
+        if indexes.iter().all(|&evaluated| evaluated) {
+            return;
+        }
+
+        // Elementwise keywords inspect each remaining item in turn.
+        self.mark_elementwise(instance, indexes, ctx);
+
+        // Applicators contribute marks from their nested schemas.
+        self.mark_applicators(instance, indexes, ctx);
+    }
+
+    /// Recurse into `$ref`, `$recursiveRef` and `$dynamicRef` targets so that
+    /// whatever they mark is propagated back to this schema's view.
+    fn mark_referenced(
+        &self,
+        instance: &Value,
+        indexes: &mut Vec<bool>,
+        ctx: &mut ValidationContext,
+    ) {
         if let Some(ref_) = &self.ref_ {
             ref_.0.mark_evaluated_indexes(instance, indexes, ctx);
         }
 
-        // Handle $recursiveRef (Draft 2019-09 only)
         if let Some(recursive_ref) = &self.recursive_ref {
             if let Some(validators) = recursive_ref.get() {
                 validators.mark_evaluated_indexes(instance, indexes, ctx);
             }
         }
 
-        // Handle $dynamicRef (Draft 2020-12+)
         if let Some(dynamic_ref) = &self.dynamic_ref {
             dynamic_ref.mark_evaluated_indexes(instance, indexes, ctx);
         }
+    }
 
-        // Mark items based on items/prefixItems keywords
+    /// Mark the leading run of items evaluated by `items` and `prefixItems`.
+    fn mark_adjacent(&self, indexes: &mut Vec<bool>) {
         if let Some(limit) = self.items_limit {
-            // Draft 2019-09: items (as array) marks first N items
-            for idx in indexes.iter_mut().take(limit) {
-                *idx = true;
+            // Draft 2019-09: `items` (tuple form) marks the first `limit` items.
+            // `usize::MAX` denotes the object form, which applies to every item.
+            if limit == usize::MAX {
+                indexes.fill(true);
+            } else {
+                indexes[..limit].fill(true);
             }
         }
 
         if let Some(limit) = self.prefix_items {
             // prefixItems marks first N items
-            for idx in indexes.iter_mut().take(limit) {
-                *idx = true;
+            for evaluated in indexes.iter_mut().take(limit) {
+                *evaluated = true;
             }
         }
+    }
 
-        // Early exit if all items are already evaluated
-        if indexes.iter().all(|&evaluated| evaluated) {
-            return;
-        }
-
-        // Process contains and unevaluatedItems
+    /// Mark items that match `contains` or `unevaluatedItems`.
+    fn mark_elementwise(
+        &self,
+        instance: &Value,
+        indexes: &mut [bool],
+        ctx: &mut ValidationContext,
+    ) {
         if let Value::Array(items) = instance {
-            for (item, is_evaluated) in items.iter().zip(indexes.iter_mut()) {
-                if *is_evaluated {
+            for (item, evaluated) in items.iter().zip(indexes.iter_mut()) {
+                if *evaluated {
                     continue;
                 }
                 // contains marks items that match
                 if let Some(validator) = &self.contains {
                     if validator.is_valid(item, ctx) {
-                        *is_evaluated = true;
+                        *evaluated = true;
                         continue;
                     }
                 }
                 // unevaluatedItems itself can mark items
                 if let Some(validator) = &self.unevaluated {
                     if validator.is_valid(item, ctx) {
-                        *is_evaluated = true;
+                        *evaluated = true;
                     }
                 }
             }
         }
+    }
 
-        // Handle conditional
+    /// Recurse into conditionals and combinators, letting successful branches
+    /// contribute their own marks.
+    fn mark_applicators(
+        &self,
+        instance: &Value,
+        indexes: &mut Vec<bool>,
+        ctx: &mut ValidationContext,
+    ) {
         if let Some(conditional) = &self.conditional {
             conditional.mark_evaluated_indexes(instance, indexes, ctx);
         }
 
-        // Handle allOf - each schema that validates successfully marks items
         if let Some(all_of) = &self.all_of {
-            for (validator, item_validators) in all_of {
-                if validator.is_valid(instance, ctx) {
-                    item_validators.mark_evaluated_indexes(instance, indexes, ctx);
-                }
-            }
-        }
-
-        // Handle anyOf - each schema that validates successfully marks items
-        if let Some(any_of) = &self.any_of {
-            for (validator, item_validators) in any_of {
-                if validator.is_valid(instance, ctx) {
-                    item_validators.mark_evaluated_indexes(instance, indexes, ctx);
-                }
-            }
-        }
-
-        // Handle oneOf - only mark if exactly one schema validates
-        // Short-circuit: stop checking after finding 2 matches
-        if let Some(one_of) = &self.one_of {
-            let mut match_count = 0;
-            let mut matched_validators = None;
-            for (node, validators) in one_of {
+            for (node, validators) in all_of {
                 if node.is_valid(instance, ctx) {
-                    match_count += 1;
-                    if match_count > 1 {
-                        break; // More than one match, don't mark any indexes
-                    }
-                    matched_validators = Some(validators);
-                }
-            }
-            if match_count == 1 {
-                if let Some(validators) = matched_validators {
                     validators.mark_evaluated_indexes(instance, indexes, ctx);
                 }
+            }
+        }
+
+        if let Some(any_of) = &self.any_of {
+            for (node, validators) in any_of {
+                if node.is_valid(instance, ctx) {
+                    validators.mark_evaluated_indexes(instance, indexes, ctx);
+                }
+            }
+        }
+
+        if let Some(one_of) = &self.one_of {
+            let mut matched = None;
+            let mut matches = 0usize;
+            for (node, validators) in one_of {
+                if node.is_valid(instance, ctx) {
+                    matches += 1;
+                    if matches > 1 {
+                        // More than one match: no single branch may contribute.
+                        matched = None;
+                        break;
+                    }
+                    matched = Some(validators);
+                }
+            }
+            if let Some(validators) = matched {
+                validators.mark_evaluated_indexes(instance, indexes, ctx);
             }
         }
     }

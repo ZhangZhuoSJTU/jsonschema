@@ -18,47 +18,37 @@ pub(crate) struct OneOfValidator {
 impl OneOfValidator {
     #[inline]
     pub(crate) fn compile<'a>(ctx: &compiler::Context, schema: &'a Value) -> CompilationResult<'a> {
-        if let Value::Array(items) = schema {
-            let ctx = ctx.new_at_location("oneOf");
-            let mut schemas = Vec::with_capacity(items.len());
-            for (idx, item) in items.iter().enumerate() {
-                let ctx = ctx.new_at_location(idx);
-                let node = compiler::compile(&ctx, ctx.as_resource_ref(item))?;
-                schemas.push(node);
-            }
-            Ok(Box::new(OneOfValidator {
-                schemas,
-                location: ctx.location().clone(),
-            }))
-        } else {
+        let Value::Array(items) = schema else {
             let location = ctx.location().join("oneOf");
-            Err(ValidationError::single_type_error(
+            return Err(ValidationError::single_type_error(
                 location.clone(),
                 location,
                 Location::new(),
                 schema,
                 JsonType::Array,
-            ))
-        }
+            ));
+        };
+        let ctx = ctx.new_at_location("oneOf");
+        let schemas = items
+            .iter()
+            .enumerate()
+            .map(|(idx, item)| {
+                let ctx = ctx.new_at_location(idx);
+                compiler::compile(&ctx, ctx.as_resource_ref(item))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let location = ctx.location().clone();
+        Ok(Box::new(OneOfValidator { schemas, location }))
     }
 
     fn get_first_valid(&self, instance: &Value, ctx: &mut ValidationContext) -> Option<usize> {
-        let mut first_valid_idx = None;
-        for (idx, node) in self.schemas.iter().enumerate() {
-            if node.is_valid(instance, ctx) {
-                first_valid_idx = Some(idx);
-                break;
-            }
-        }
-        first_valid_idx
+        locate(&self.schemas, 0, instance, ctx)
     }
 
     #[allow(clippy::arithmetic_side_effects)]
     fn are_others_valid(&self, instance: &Value, idx: usize, ctx: &mut ValidationContext) -> bool {
-        self.schemas
-            .iter()
-            .skip(idx + 1)
-            .any(|n| n.is_valid(instance, ctx))
+        let (_, rest) = self.schemas.split_at((idx + 1).min(self.schemas.len()));
+        locate(rest, idx, instance, ctx).map_or(false, |found| found >= idx)
     }
 }
 
@@ -126,8 +116,10 @@ impl Validate for SingleOneOfValidator {
 
 impl Validate for OneOfValidator {
     fn is_valid(&self, instance: &Value, ctx: &mut ValidationContext) -> bool {
-        let first_valid_idx = self.get_first_valid(instance, ctx);
-        first_valid_idx.is_some_and(|idx| !self.are_others_valid(instance, idx, ctx))
+        match self.get_first_valid(instance, ctx) {
+            Some(idx) => !self.are_others_valid(instance, idx, ctx),
+            None => false,
+        }
     }
 
     fn validate<'i>(
@@ -200,11 +192,12 @@ impl Validate for OneOfValidator {
         if self.are_others_valid(instance, first_idx, ctx) {
             let mut successes = Vec::new();
             for (idx, node) in self.schemas.iter().enumerate() {
-                if idx == first_idx || node.is_valid(instance, ctx) {
-                    let child = node.evaluate_instance(instance, location, tracker, ctx);
-                    if child.valid {
-                        successes.push(child);
-                    }
+                if idx != first_idx && !node.is_valid(instance, ctx) {
+                    continue;
+                }
+                let child = node.evaluate_instance(instance, location, tracker, ctx);
+                if child.valid {
+                    successes.push(child);
                 }
             }
             EvaluationResult::Invalid {
@@ -234,6 +227,26 @@ pub(crate) fn compile<'a>(
             _ => Some(OneOfValidator::compile(ctx, schema)),
         },
         _ => Some(OneOfValidator::compile(ctx, schema)),
+    }
+}
+
+fn locate(
+    nodes: &[SchemaNode],
+    base: usize,
+    instance: &Value,
+    ctx: &mut ValidationContext,
+) -> Option<usize> {
+    match nodes {
+        [] => None,
+        [only] => Some(base).filter(|_| only.is_valid(instance, ctx)),
+        _ => {
+            let pivot = nodes.len() >> 1;
+            let (front, back) = nodes.split_at(pivot);
+            match locate(front, base, instance, ctx) {
+                None => locate(back, base + pivot, instance, ctx),
+                found => found,
+            }
+        }
     }
 }
 

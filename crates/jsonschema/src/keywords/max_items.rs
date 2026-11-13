@@ -43,7 +43,8 @@ impl MaxItemsValidator {
 impl Validate for MaxItemsValidator {
     fn is_valid(&self, instance: &Value, _ctx: &mut ValidationContext) -> bool {
         if let Value::Array(items) = instance {
-            if (items.len() as u64) > self.limit {
+            let count = items.len() as u64;
+            if count > self.limit {
                 return false;
             }
         }

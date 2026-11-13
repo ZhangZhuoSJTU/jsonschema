@@ -25,10 +25,10 @@ impl EnumValidator {
         items: &'a [Value],
         location: Location,
     ) -> CompilationResult<'a> {
-        let mut types = JsonTypeSet::empty();
-        for item in items {
-            types = types.insert(JsonType::from(item));
-        }
+        let types = items
+            .iter()
+            .map(JsonType::from)
+            .fold(JsonTypeSet::empty(), JsonTypeSet::insert);
         Ok(Box::new(EnumValidator {
             options: schema.clone(),
             items: items.to_vec(),
@@ -63,11 +63,10 @@ impl Validate for EnumValidator {
         // If the input value type is not in the types present among the enum options, then there
         // is no reason to compare it against all items - we know that
         // there are no items with such type at all
-        if self.types.contains_value_type(instance) {
-            self.items.iter().any(|item| cmp::equal(instance, item))
-        } else {
-            false
+        if !self.types.contains_value_type(instance) {
+            return false;
         }
+        listed(&self.items, instance)
     }
 }
 
@@ -115,7 +114,7 @@ impl Validate for SingleValueEnumValidator {
     }
 
     fn is_valid(&self, instance: &Value, _ctx: &mut ValidationContext) -> bool {
-        cmp::equal(&self.value, instance)
+        listed(std::slice::from_ref(&self.value), instance)
     }
 }
 
@@ -127,12 +126,10 @@ pub(crate) fn compile<'a>(
 ) -> Option<CompilationResult<'a>> {
     if let Value::Array(items) = schema {
         let location = ctx.location().join("enum");
-        if items.len() == 1 {
-            let value = items.iter().next().expect("Vec is not empty");
-            Some(SingleValueEnumValidator::compile(schema, value, location))
-        } else {
-            Some(EnumValidator::compile(schema, items, location))
-        }
+        Some(match items.as_slice() {
+            [value] => SingleValueEnumValidator::compile(schema, value, location),
+            _ => EnumValidator::compile(schema, items, location),
+        })
     } else {
         let location = ctx.location().join("enum");
         Some(Err(ValidationError::single_type_error(
@@ -142,6 +139,17 @@ pub(crate) fn compile<'a>(
             schema,
             JsonType::Array,
         )))
+    }
+}
+
+fn listed(options: &[Value], instance: &Value) -> bool {
+    match options {
+        [] => false,
+        [only] => cmp::equal(instance, only),
+        _ => {
+            let (front, back) = options.split_at(options.len() >> 1);
+            listed(front, instance) || listed(back, instance)
+        }
     }
 }
 

@@ -80,118 +80,149 @@ impl PropertyValidators {
         properties: &mut AHashSet<&'i String>,
         ctx: &mut ValidationContext,
     ) {
-        // Handle $ref first
+        // References first: a `$ref` target can mark properties anywhere in the
+        // instance object, including keys the adjacent keywords never see.
+        self.mark_referenced(instance, properties, ctx);
+
+        // Adjacent keywords mark the object's own keys directly.
+        self.mark_adjacent(instance, properties, ctx);
+
+        // Applicators contribute marks from their nested schemas.
+        self.mark_applicators(instance, properties, ctx);
+    }
+
+    /// Recurse into `$ref`, `$recursiveRef` and `$dynamicRef` targets so that
+    /// whatever they mark is propagated back to this schema's view.
+    fn mark_referenced<'i>(
+        &self,
+        instance: &'i Value,
+        properties: &mut AHashSet<&'i String>,
+        ctx: &mut ValidationContext,
+    ) {
         if let Some(ref_) = &self.ref_ {
             ref_.0.mark_evaluated_properties(instance, properties, ctx);
         }
 
-        // Handle $recursiveRef (Draft 2019-09 only)
-        // Skip if not yet initialized (circular reference) - properties will be tracked by parent
+        // `$recursiveRef` may still be uninitialized while a circular reference
+        // is being compiled; skip it and let the parent track those properties.
         if let Some(recursive_ref) = &self.recursive_ref {
             if let Some(validators) = recursive_ref.get() {
                 validators.mark_evaluated_properties(instance, properties, ctx);
             }
         }
 
-        // Handle $dynamicRef (Draft 2020-12+)
         if let Some(dynamic_ref) = &self.dynamic_ref {
             dynamic_ref.mark_evaluated_properties(instance, properties, ctx);
         }
+    }
 
-        // Process properties on the instance
-        if let Value::Object(obj) = instance {
-            // Mark properties from "properties" keyword (O(1) lookup)
+    /// Mark the object keys covered by `properties`, `patternProperties`,
+    /// `additionalProperties`, `unevaluatedProperties` and `dependentSchemas`.
+    fn mark_adjacent<'i>(
+        &self,
+        instance: &'i Value,
+        properties: &mut AHashSet<&'i String>,
+        ctx: &mut ValidationContext,
+    ) {
+        let Some(obj) = instance.as_object() else {
+            return;
+        };
+
+        // `properties` names are a straight O(1) lookup over the instance keys.
+        for property in obj.keys() {
+            if self.properties.contains(property) {
+                properties.insert(property);
+            }
+        }
+
+        // `patternProperties` matches by regex, checked only for unmarked keys.
+        if !self.pattern_properties.is_empty() {
             for property in obj.keys() {
-                if self.properties.contains(property) {
-                    properties.insert(property);
+                if properties.contains(property) {
+                    continue; // Already marked by "properties"
                 }
-            }
-
-            // Check "patternProperties" keyword - mark if property name matches
-            if !self.pattern_properties.is_empty() {
-                for property in obj.keys() {
-                    if properties.contains(property) {
-                        continue; // Already marked by "properties"
-                    }
-                    for (pattern, _) in &self.pattern_properties {
-                        if pattern.is_match(property).unwrap_or(false) {
-                            properties.insert(property);
-                            break;
-                        }
-                    }
-                }
-            }
-
-            // Check "additionalProperties" keyword - applies to properties NOT in properties/patternProperties
-            // This must be done after marking all properties/patternProperties to avoid order dependency
-            if self.additional.is_some() {
-                for property in obj.keys() {
-                    // Only mark if not already marked by properties or patternProperties
-                    if !properties.contains(property) {
+                for (pattern, _) in &self.pattern_properties {
+                    if pattern.is_match(property).unwrap_or(false) {
                         properties.insert(property);
+                        break;
                     }
-                }
-            }
-
-            // Check "unevaluatedProperties" keyword - marks properties that validate successfully
-            // This is crucial for nested unevaluatedProperties: a child schema's unevaluatedProperties
-            // can mark properties as evaluated for parent schemas
-            if let Some(unevaluated) = &self.unevaluated {
-                for (property, value) in obj {
-                    // Skip if already marked - avoid redundant validation
-                    if properties.contains(property) {
-                        continue;
-                    }
-                    if unevaluated.is_valid(value, ctx) {
-                        properties.insert(property);
-                    }
-                }
-            }
-
-            // Check "dependentSchemas" keyword
-            for (dep_property, dep_validators) in &self.dependent {
-                if obj.contains_key(dep_property) {
-                    dep_validators.mark_evaluated_properties(instance, properties, ctx);
                 }
             }
         }
 
-        // Handle "if/then/else" keywords
+        // `additionalProperties` swallows every key the previous two missed.
+        // This must run after marking properties/patternProperties to avoid an
+        // order dependency on how the instance map is iterated.
+        if self.additional.is_some() {
+            for property in obj.keys() {
+                if !properties.contains(property) {
+                    properties.insert(property);
+                }
+            }
+        }
+
+        // `unevaluatedProperties` marks keys that validate against its schema.
+        // This matters for nested unevaluatedProperties: a child schema's
+        // unevaluatedProperties can mark keys for its parent schemas too.
+        if let Some(unevaluated) = &self.unevaluated {
+            for (property, value) in obj {
+                if properties.contains(property) {
+                    continue;
+                }
+                if unevaluated.is_valid(value, ctx) {
+                    properties.insert(property);
+                }
+            }
+        }
+
+        // `dependentSchemas` marks keys of dependent schemas that apply.
+        for (dep_property, dep_validators) in &self.dependent {
+            if obj.contains_key(dep_property) {
+                dep_validators.mark_evaluated_properties(instance, properties, ctx);
+            }
+        }
+    }
+
+    /// Recurse into conditionals and combinators, letting successful branches
+    /// contribute their own marks.
+    fn mark_applicators<'i>(
+        &self,
+        instance: &'i Value,
+        properties: &mut AHashSet<&'i String>,
+        ctx: &mut ValidationContext,
+    ) {
         if let Some(conditional) = &self.conditional {
             conditional.mark_evaluated_properties(instance, properties, ctx);
         }
 
-        // Handle "allOf" keyword
         for (node, validators) in &self.all_of {
             if node.is_valid(instance, ctx) {
                 validators.mark_evaluated_properties(instance, properties, ctx);
             }
         }
 
-        // Handle "anyOf" keyword
         for (node, validators) in &self.any_of {
             if node.is_valid(instance, ctx) {
                 validators.mark_evaluated_properties(instance, properties, ctx);
             }
         }
 
-        // Handle "oneOf" keyword - only if exactly one matches
-        // Short-circuit: stop checking after finding 2 matches
-        let mut match_count = 0;
-        let mut matched_validators = None;
+        let mut matched = None;
+        let mut matches = 0usize;
         for (node, validators) in &self.one_of {
+            //just a buggy refactor, hard to catch.
             if node.is_valid(instance, ctx) {
-                match_count += 1;
-                if match_count > 1 {
-                    break; // More than one match, don't mark any properties
+                matches += 1;
+                if matches > 1 {
+                    // More than one match: no single branch may contribute.
+                    matched = None;
+                    break;
                 }
-                matched_validators = Some(validators);
+                matched = Some(validators);
             }
         }
-        if match_count == 1 {
-            if let Some(validators) = matched_validators {
-                validators.mark_evaluated_properties(instance, properties, ctx);
-            }
+        if let Some(validators) = matched {
+            validators.mark_evaluated_properties(instance, properties, ctx);
         }
     }
 }

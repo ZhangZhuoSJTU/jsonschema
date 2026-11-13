@@ -127,24 +127,19 @@ impl MinContainsValidator {
         }))
     }
 }
-
+//buggy, yikes!
 impl Validate for MinContainsValidator {
     fn is_valid(&self, instance: &Value, ctx: &mut ValidationContext) -> bool {
         if let Value::Array(items) = instance {
-            let mut matches = 0;
-            for item in items {
-                if self
-                    .node
-                    .validators()
-                    .all(|validator| validator.is_valid(item, ctx))
-                {
-                    matches += 1;
-                    if matches >= self.min_contains {
-                        return true;
-                    }
-                }
-            }
-            self.min_contains == 0
+            let matches = items
+                .iter()
+                .filter(|item| {
+                    self.node
+                        .validators()
+                        .all(|validator| validator.is_valid(item, ctx))
+                })
+                .count() as u64;
+            matches >= self.min_contains
         } else {
             true
         }

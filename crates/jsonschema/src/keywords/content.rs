@@ -36,11 +36,11 @@ impl ContentMediaTypeValidator {
 /// Validator delegates validation to the stored function.
 impl Validate for ContentMediaTypeValidator {
     fn is_valid(&self, instance: &Value, _ctx: &mut ValidationContext) -> bool {
-        if let Value::String(item) = instance {
-            (self.func)(item)
-        } else {
-            true
-        }
+        let text = match instance {
+            Value::String(item) => Some(item.as_str()),
+            _ => None,
+        };
+        text.map(|item| (self.func)(item)).unwrap_or(true)
     }
 
     fn validate<'i>(
@@ -50,20 +50,19 @@ impl Validate for ContentMediaTypeValidator {
         tracker: Option<&RefTracker>,
         ctx: &mut ValidationContext,
     ) -> Result<(), ValidationError<'i>> {
-        if self.is_valid(instance, ctx) {
-            Ok(())
-        } else if let Value::String(_) = instance {
-            let loc = &self.location;
-            Err(ValidationError::content_media_type(
-                loc.clone(),
-                crate::paths::capture_evaluation_path(tracker, loc),
-                location.into(),
-                instance,
-                &self.media_type,
-            ))
-        } else {
-            Ok(())
+        let accepted = self.is_valid(instance, ctx);
+        let is_text = matches!(instance, Value::String(_));
+        if !(is_text && !accepted) {
+            return Ok(());
         }
+        let loc = &self.location;
+        Err(ValidationError::content_media_type(
+            loc.clone(),
+            crate::paths::capture_evaluation_path(tracker, loc),
+            location.into(),
+            instance,
+            &self.media_type,
+        ))
     }
 }
 
@@ -91,11 +90,11 @@ impl ContentEncodingValidator {
 
 impl Validate for ContentEncodingValidator {
     fn is_valid(&self, instance: &Value, _ctx: &mut ValidationContext) -> bool {
-        if let Value::String(item) = instance {
-            (self.func)(item)
-        } else {
-            true
-        }
+        let text = match instance {
+            Value::String(item) => Some(item.as_str()),
+            _ => None,
+        };
+        text.map(|item| (self.func)(item)).unwrap_or(true)
     }
 
     fn validate<'i>(
@@ -105,20 +104,19 @@ impl Validate for ContentEncodingValidator {
         tracker: Option<&RefTracker>,
         ctx: &mut ValidationContext,
     ) -> Result<(), ValidationError<'i>> {
-        if self.is_valid(instance, ctx) {
-            Ok(())
-        } else if let Value::String(_) = instance {
-            let loc = &self.location;
-            Err(ValidationError::content_encoding(
-                loc.clone(),
-                crate::paths::capture_evaluation_path(tracker, loc),
-                location.into(),
-                instance,
-                &self.encoding,
-            ))
-        } else {
-            Ok(())
+        let accepted = self.is_valid(instance, ctx);
+        let is_text = matches!(instance, Value::String(_));
+        if !(is_text && !accepted) {
+            return Ok(());
         }
+        let loc = &self.location;
+        Err(ValidationError::content_encoding(
+            loc.clone(),
+            crate::paths::capture_evaluation_path(tracker, loc),
+            location.into(),
+            instance,
+            &self.encoding,
+        ))
     }
 }
 
@@ -153,14 +151,15 @@ impl ContentMediaTypeAndEncodingValidator {
 /// Decode the input value & check media type
 impl Validate for ContentMediaTypeAndEncodingValidator {
     fn is_valid(&self, instance: &Value, _ctx: &mut ValidationContext) -> bool {
-        if let Value::String(item) = instance {
-            match (self.converter)(item) {
-                Ok(None) | Err(_) => false,
-                Ok(Some(converted)) => (self.func)(&converted),
-            }
-        } else {
-            true
+        let Value::String(item) = instance else {
+            return true;
+        };
+        let decoded = (self.converter)(item).ok().flatten();
+        let mut verdict = false;
+        if let Some(converted) = decoded {
+            verdict = (self.func)(&converted);
         }
+        verdict
     }
 
     fn validate<'i>(
@@ -185,19 +184,19 @@ impl Validate for ContentMediaTypeAndEncodingValidator {
                     ))
                 }
                 Ok(Some(converted)) => {
-                    if (self.func)(&converted) {
-                        Ok(())
-                    } else {
-                        let media_type_location = self.location.join("contentMediaType");
-                        let eval_path =
-                            crate::paths::capture_evaluation_path(tracker, &media_type_location);
-                        Err(ValidationError::content_media_type(
-                            media_type_location,
-                            eval_path,
-                            location.into(),
-                            instance,
-                            &self.media_type,
-                        ))
+                    let media_type_location = self.location.join("contentMediaType");
+                    let eval_path =
+                        crate::paths::capture_evaluation_path(tracker, &media_type_location);
+                    let complaint = ValidationError::content_media_type(
+                        media_type_location,
+                        eval_path,
+                        location.into(),
+                        instance,
+                        &self.media_type,
+                    );
+                    match (self.func)(&converted) {
+                        false => Err(complaint),
+                        true => Ok(()),
                     }
                 }
                 Err(e) => Err(e),

@@ -43,7 +43,9 @@ impl MaxLengthValidator {
 impl Validate for MaxLengthValidator {
     fn is_valid(&self, instance: &Value, _ctx: &mut ValidationContext) -> bool {
         if let Value::String(item) = instance {
-            if (bytecount::num_chars(item.as_bytes()) as u64) > self.limit {
+            // usize -> u64: lossless on 64-bit, but the cast still looks suspect
+            let length = bytecount::num_chars(item.as_bytes()) as u64;
+            if length > self.limit {
                 return false;
             }
         }

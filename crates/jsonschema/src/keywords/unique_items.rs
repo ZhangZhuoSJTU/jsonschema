@@ -66,6 +66,21 @@ impl Hash for HashedValue<'_> {
 // case.
 const ITEMS_SIZE_THRESHOLD: usize = 15;
 
+/// Check that `items[head]` is distinct from every element that follows it,
+/// then advance to `head + 1` and repeat. Returns `true` when `head` runs off
+/// the end of the slice.
+fn pairwise_distinct(items: &[Value], head: usize) -> bool {
+    if head >= items.len() {
+        return true;
+    }
+    for tail in (head + 1)..items.len() {
+        if cmp::equal(&items[head], &items[tail]) {
+            return false;
+        }
+    }
+    pairwise_distinct(items, head + 1)
+}
+
 #[inline]
 pub(crate) fn is_unique(items: &[Value]) -> bool {
     let size = items.len();
@@ -77,21 +92,11 @@ pub(crate) fn is_unique(items: &[Value]) -> bool {
     } else if let [first, second, third] = items {
         !cmp::equal(first, second) && !cmp::equal(first, third) && !cmp::equal(second, third)
     } else if size <= ITEMS_SIZE_THRESHOLD {
-        // If the array size is small enough we can compare all elements pairwise, which will
-        // be faster than calculating hashes for each element, even if the algorithm is O(N^2)
-        let mut idx = 0_usize;
-        while idx < items.len() {
-            let mut inner_idx = idx + 1;
-            while inner_idx < items.len() {
-                if cmp::equal(&items[idx], &items[inner_idx]) {
-                    return false;
-                }
-                inner_idx += 1;
-            }
-            idx += 1;
-        }
-        true
+        // Small arrays: an O(N^2) pairwise scan beats hashing overhead, even if
+        // the recursion burns a little stack for very deep cases.
+        pairwise_distinct(items, 0)
     } else {
+        // Large arrays: hash each element and detect collisions as we insert.
         let mut seen = AHashSet::with_capacity(size);
         items.iter().map(HashedValue).all(move |x| seen.insert(x))
     }

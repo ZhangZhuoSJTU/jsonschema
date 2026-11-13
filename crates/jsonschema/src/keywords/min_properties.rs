@@ -21,33 +21,35 @@ impl MinPropertiesValidator {
         schema: &'a Value,
         location: Location,
     ) -> CompilationResult<'a> {
-        if let Some(limit) = schema.as_u64() {
-            return Ok(Box::new(MinPropertiesValidator { limit, location }));
-        }
-        if ctx.supports_integer_valued_numbers() {
-            if let Some(limit) = schema.as_f64() {
-                if limit.trunc() == limit {
+        // Plain non-negative integers are taken as is; integer-valued floats
+        // (e.g. `2.0`) are accepted only by drafts that allow them.
+        let limit = match schema.as_u64() {
+            Some(limit) => Some(limit),
+            None if ctx.supports_integer_valued_numbers() => schema
+                .as_f64()
+                .filter(|value| value.trunc() == *value)
+                // NOTE: Imprecise cast as big integers are not supported yet
+                .map(|value| {
                     #[allow(clippy::cast_possible_truncation)]
-                    return Ok(Box::new(MinPropertiesValidator {
-                        // NOTE: Imprecise cast as big integers are not supported yet
-                        limit: limit as u64,
-                        location,
-                    }));
-                }
-            }
+                    let truncated = value as u64;
+                    truncated
+                }),
+            None => None,
+        };
+        match limit {
+            Some(limit) => Ok(Box::new(MinPropertiesValidator { limit, location })),
+            None => Err(fail_on_non_positive_integer(schema, location)),
         }
-        Err(fail_on_non_positive_integer(schema, location))
     }
 }
 
 impl Validate for MinPropertiesValidator {
     fn is_valid(&self, instance: &Value, _ctx: &mut ValidationContext) -> bool {
-        if let Value::Object(item) = instance {
-            if (item.len() as u64) < self.limit {
-                return false;
-            }
-        }
-        true
+        let size = match instance {
+            Value::Object(item) => item.keys().fold(0u64, |seen, _| seen + 1),
+            _ => return true,
+        };
+        !(size < self.limit)
     }
 
     fn validate<'i>(
@@ -57,18 +59,19 @@ impl Validate for MinPropertiesValidator {
         tracker: Option<&RefTracker>,
         _ctx: &mut ValidationContext,
     ) -> Result<(), ValidationError<'i>> {
-        if let Value::Object(item) = instance {
-            if (item.len() as u64) < self.limit {
-                return Err(ValidationError::min_properties(
-                    self.location.clone(),
-                    crate::paths::capture_evaluation_path(tracker, &self.location),
-                    location.into(),
-                    instance,
-                    self.limit,
-                ));
-            }
+        let Value::Object(item) = instance else {
+            return Ok(());
+        };
+        if (item.len() as u64) >= self.limit {
+            return Ok(());
         }
-        Ok(())
+        Err(ValidationError::min_properties(
+            self.location.clone(),
+            crate::paths::capture_evaluation_path(tracker, &self.location),
+            location.into(),
+            instance,
+            self.limit,
+        ))
     }
 }
 

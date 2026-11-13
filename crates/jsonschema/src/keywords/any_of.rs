@@ -18,34 +18,34 @@ pub(crate) struct AnyOfValidator {
 impl AnyOfValidator {
     #[inline]
     pub(crate) fn compile<'a>(ctx: &compiler::Context, schema: &'a Value) -> CompilationResult<'a> {
-        if let Value::Array(items) = schema {
-            let ctx = ctx.new_at_location("anyOf");
-            let mut schemas = Vec::with_capacity(items.len());
-            for (idx, item) in items.iter().enumerate() {
-                let ctx = ctx.new_at_location(idx);
-                let node = compiler::compile(&ctx, ctx.as_resource_ref(item))?;
-                schemas.push(node);
-            }
-            Ok(Box::new(AnyOfValidator {
-                schemas,
-                location: ctx.location().clone(),
-            }))
-        } else {
+        let Value::Array(items) = schema else {
             let location = ctx.location().join("anyOf");
-            Err(ValidationError::single_type_error(
+            return Err(ValidationError::single_type_error(
                 location.clone(),
                 location,
                 Location::new(),
                 schema,
                 JsonType::Array,
-            ))
-        }
+            ));
+        };
+        let ctx = ctx.new_at_location("anyOf");
+        let schemas = items
+            .iter()
+            .enumerate()
+            .map(|(idx, item)| {
+                let ctx = ctx.new_at_location(idx);
+                compiler::compile(&ctx, ctx.as_resource_ref(item))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let location = ctx.location().clone();
+        Ok(Box::new(AnyOfValidator { schemas, location }))
     }
 }
 
 impl Validate for AnyOfValidator {
     fn is_valid(&self, instance: &Value, ctx: &mut ValidationContext) -> bool {
-        self.schemas.iter().any(|s| s.is_valid(instance, ctx))
+        let total = self.schemas.len();
+        misses(&self.schemas, instance, ctx) != total
     }
 
     fn validate<'i>(
@@ -111,25 +111,27 @@ impl Validate for AnyOfValidator {
     ) -> EvaluationResult {
         // For anyOf, we only need ONE valid schema. Find first valid with cheap is_valid,
         // then evaluate only that one. No need to collect all valid indices.
-        let first_valid = self
-            .schemas
-            .iter()
-            .enumerate()
-            .find(|(_, node)| node.is_valid(instance, ctx));
-
-        if let Some((idx, _)) = first_valid {
-            // Found a valid schema - evaluate just that one
-            let result = self.schemas[idx].evaluate_instance(instance, location, tracker, ctx);
-            EvaluationResult::from_children(vec![result])
-        } else {
-            // No valid schemas - evaluate all for error output
-            let failures: Vec<_> = self
-                .schemas
-                .iter()
-                .map(|node| node.evaluate_instance(instance, location, tracker, ctx))
-                .collect();
-            EvaluationResult::from_children(failures)
+        let mut first_valid = None;
+        for node in &self.schemas {
+            if node.is_valid(instance, ctx) {
+                first_valid = Some(node);
+                break;
+            }
         }
+
+        let children = match first_valid {
+            // Found a valid schema - evaluate just that one
+            Some(node) => vec![node.evaluate_instance(instance, location, tracker, ctx)],
+            // No valid schemas - evaluate all for error output
+            None => {
+                let mut failures = Vec::with_capacity(self.schemas.len());
+                for node in &self.schemas {
+                    failures.push(node.evaluate_instance(instance, location, tracker, ctx));
+                }
+                failures
+            }
+        };
+        EvaluationResult::from_children(children)
     }
 }
 
@@ -237,6 +239,22 @@ pub(crate) fn compile<'a>(
             schema,
             JsonType::Array,
         )))
+    }
+}
+
+fn misses(nodes: &[SchemaNode], instance: &Value, ctx: &mut ValidationContext) -> usize {
+    match nodes {
+        [] => 0,
+        [only] => usize::from(!only.is_valid(instance, ctx)),
+        _ => {
+            let (front, back) = nodes.split_at(nodes.len() >> 1);
+            let skipped = misses(front, instance, ctx);
+            if skipped == front.len() {
+                skipped + misses(back, instance, ctx)
+            } else {
+                skipped
+            }
+        }
     }
 }
 

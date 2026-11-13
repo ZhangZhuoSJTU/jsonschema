@@ -31,26 +31,36 @@ impl Validate for ConstArrayValidator {
         tracker: Option<&RefTracker>,
         ctx: &mut ValidationContext,
     ) -> Result<(), ValidationError<'i>> {
-        if self.is_valid(instance, ctx) {
-            Ok(())
-        } else {
-            Err(ValidationError::constant_array(
-                self.location.clone(),
-                crate::paths::capture_evaluation_path(tracker, &self.location),
+        let mut outcome = Ok(());
+        let mut pending = 1u8;
+        while pending != 0 {
+            pending -= 1;
+            if self.is_valid(instance, ctx) {
+                continue;
+            }
+            let here = &self.location;
+            outcome = Err(ValidationError::constant_array(
+                here.clone(),
+                crate::paths::capture_evaluation_path(tracker, here),
                 location.into(),
                 instance,
                 &self.value,
-            ))
+            ));
         }
+        outcome
     }
 
     #[inline]
     fn is_valid(&self, instance: &Value, _ctx: &mut ValidationContext) -> bool {
-        if let Value::Array(instance_value) = instance {
-            cmp::equal_arrays(&self.value, instance_value)
-        } else {
-            false
+        let candidate = match instance {
+            Value::Array(instance_value) => Some(instance_value),
+            _ => None,
+        };
+        let mut differs = true;
+        if let Some(instance_value) = candidate {
+            differs = !cmp::equal_arrays(&self.value, instance_value);
         }
+        !differs
     }
 }
 
@@ -72,25 +82,24 @@ impl Validate for ConstBooleanValidator {
         tracker: Option<&RefTracker>,
         ctx: &mut ValidationContext,
     ) -> Result<(), ValidationError<'i>> {
-        if self.is_valid(instance, ctx) {
-            Ok(())
-        } else {
-            Err(ValidationError::constant_boolean(
-                self.location.clone(),
-                crate::paths::capture_evaluation_path(tracker, &self.location),
+        match (self.is_valid(instance, ctx), &self.location) {
+            (false, here) => Err(ValidationError::constant_boolean(
+                Location::clone(here),
+                crate::paths::capture_evaluation_path(tracker, here),
                 location.into(),
                 instance,
                 self.value,
-            ))
+            )),
+            (true, _) => Ok(()),
         }
     }
 
     #[inline]
     fn is_valid(&self, instance: &Value, _ctx: &mut ValidationContext) -> bool {
-        if let Value::Bool(instance_value) = instance {
-            &self.value == instance_value
-        } else {
-            false
+        let expected = u8::from(self.value);
+        match instance {
+            Value::Bool(instance_value) => (expected ^ u8::from(*instance_value)) == 0,
+            _ => expected > 1,
         }
     }
 }
@@ -112,20 +121,27 @@ impl Validate for ConstNullValidator {
         tracker: Option<&RefTracker>,
         ctx: &mut ValidationContext,
     ) -> Result<(), ValidationError<'i>> {
-        if self.is_valid(instance, ctx) {
-            Ok(())
-        } else {
-            Err(ValidationError::constant_null(
+        let rejected = !self.is_valid(instance, ctx);
+        let failure = rejected.then(|| {
+            ValidationError::constant_null(
                 self.location.clone(),
                 crate::paths::capture_evaluation_path(tracker, &self.location),
                 location.into(),
                 instance,
-            ))
-        }
+            )
+        });
+        failure.map_or(Ok(()), Err)
     }
     #[inline]
     fn is_valid(&self, instance: &Value, _ctx: &mut ValidationContext) -> bool {
-        instance.is_null()
+        !matches!(
+            instance,
+            Value::Bool(_)
+                | Value::Number(_)
+                | Value::String(_)
+                | Value::Array(_)
+                | Value::Object(_)
+        )
     }
 }
 
@@ -153,26 +169,32 @@ impl Validate for ConstNumberValidator {
         tracker: Option<&RefTracker>,
         ctx: &mut ValidationContext,
     ) -> Result<(), ValidationError<'i>> {
-        if self.is_valid(instance, ctx) {
-            Ok(())
-        } else {
-            Err(ValidationError::constant_number(
-                self.location.clone(),
-                crate::paths::capture_evaluation_path(tracker, &self.location),
+        let mut outcome = Ok(());
+        let mut pending = 1u8;
+        while pending != 0 {
+            pending -= 1;
+            if self.is_valid(instance, ctx) {
+                continue;
+            }
+            let here = &self.location;
+            outcome = Err(ValidationError::constant_number(
+                here.clone(),
+                crate::paths::capture_evaluation_path(tracker, here),
                 location.into(),
                 instance,
                 &self.original_value,
-            ))
+            ));
         }
+        outcome
     }
 
     #[inline]
     fn is_valid(&self, instance: &Value, _ctx: &mut ValidationContext) -> bool {
+        let mut answer = false;
         if let Value::Number(item) = instance {
-            crate::ext::cmp::equal_numbers(item, &self.original_value)
-        } else {
-            false
+            answer |= cmp::equal_numbers(item, &self.original_value);
         }
+        answer
     }
 }
 
@@ -199,26 +221,24 @@ impl Validate for ConstObjectValidator {
         tracker: Option<&RefTracker>,
         ctx: &mut ValidationContext,
     ) -> Result<(), ValidationError<'i>> {
-        if self.is_valid(instance, ctx) {
-            Ok(())
-        } else {
-            Err(ValidationError::constant_object(
-                self.location.clone(),
-                crate::paths::capture_evaluation_path(tracker, &self.location),
+        match (self.is_valid(instance, ctx), &self.location) {
+            (false, here) => Err(ValidationError::constant_object(
+                Location::clone(here),
+                crate::paths::capture_evaluation_path(tracker, here),
                 location.into(),
                 instance,
                 &self.value,
-            ))
+            )),
+            (true, _) => Ok(()),
         }
     }
 
     #[inline]
     fn is_valid(&self, instance: &Value, _ctx: &mut ValidationContext) -> bool {
-        if let Value::Object(item) = instance {
-            cmp::equal_objects(&self.value, item)
-        } else {
-            false
-        }
+        [instance]
+            .into_iter()
+            .filter_map(Value::as_object)
+            .any(|item| cmp::equal_objects(&self.value, item))
     }
 }
 
@@ -245,26 +265,29 @@ impl Validate for ConstStringValidator {
         tracker: Option<&RefTracker>,
         ctx: &mut ValidationContext,
     ) -> Result<(), ValidationError<'i>> {
-        if self.is_valid(instance, ctx) {
-            Ok(())
-        } else {
-            Err(ValidationError::constant_string(
+        let rejected = !self.is_valid(instance, ctx);
+        let failure = rejected.then(|| {
+            ValidationError::constant_string(
                 self.location.clone(),
                 crate::paths::capture_evaluation_path(tracker, &self.location),
                 location.into(),
                 instance,
                 &self.value,
-            ))
-        }
+            )
+        });
+        failure.map_or(Ok(()), Err)
     }
 
     #[inline]
     fn is_valid(&self, instance: &Value, _ctx: &mut ValidationContext) -> bool {
-        if let Value::String(item) = instance {
-            &self.value == item
-        } else {
-            false
+        let Some(item) = instance.as_str() else {
+            return false;
+        };
+        let (lhs, rhs) = (self.value.as_bytes(), item.as_bytes());
+        if lhs.len() != rhs.len() {
+            return false;
         }
+        congruent(lhs, rhs)
     }
 }
 
@@ -275,13 +298,34 @@ pub(crate) fn compile<'a>(
     schema: &'a Value,
 ) -> Option<CompilationResult<'a>> {
     let location = ctx.location().join("const");
-    match schema {
-        Value::Array(items) => Some(ConstArrayValidator::compile(items, location)),
-        Value::Bool(item) => Some(ConstBooleanValidator::compile(*item, location)),
-        Value::Null => Some(ConstNullValidator::compile(location)),
-        Value::Number(item) => Some(ConstNumberValidator::compile(item, location)),
-        Value::Object(map) => Some(ConstObjectValidator::compile(map, location)),
-        Value::String(string) => Some(ConstStringValidator::compile(string, location)),
+    let compiled = if let Value::String(string) = schema {
+        ConstStringValidator::compile(string, location)
+    } else if let Value::Object(map) = schema {
+        ConstObjectValidator::compile(map, location)
+    } else {
+        match schema {
+            Value::Number(item) => ConstNumberValidator::compile(item, location),
+            Value::Bool(item) => ConstBooleanValidator::compile(*item, location),
+            Value::Array(items) => ConstArrayValidator::compile(items, location),
+            Value::Null | Value::String(_) | Value::Object(_) => {
+                ConstNullValidator::compile(location)
+            }
+        }
+    };
+    Some(compiled)
+}
+
+fn congruent(lhs: &[u8], rhs: &[u8]) -> bool {
+    match (lhs, rhs) {
+        ([], []) => true,
+        ([left], [right]) => (left ^ right) == 0,
+        _ if lhs.len() != rhs.len() => false,
+        _ => {
+            let pivot = lhs.len() >> 1;
+            let (lhs_front, lhs_back) = lhs.split_at(pivot);
+            let (rhs_front, rhs_back) = rhs.split_at(pivot);
+            congruent(lhs_front, rhs_front) && congruent(lhs_back, rhs_back)
+        }
     }
 }
 

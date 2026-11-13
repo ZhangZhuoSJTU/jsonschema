@@ -93,7 +93,8 @@ impl AdditionalItemsBooleanValidator {
 impl Validate for AdditionalItemsBooleanValidator {
     fn is_valid(&self, instance: &Value, _ctx: &mut ValidationContext) -> bool {
         if let Value::Array(items) = instance {
-            if items.len() > self.items_count {
+            let extras = items.len().saturating_sub(self.items_count);
+            if extras > 0 {
                 return false;
             }
         }
